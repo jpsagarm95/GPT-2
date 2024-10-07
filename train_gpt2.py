@@ -185,6 +185,8 @@ class DataLoaderLite:
 
 
 # Detect the device automatically
+import time
+
 device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
@@ -196,22 +198,38 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=4, T=32)
+b = 16
+if device == 'cpu':
+    b = 1
+
+train_loader = DataLoaderLite(B=b, T=1024)
+
+torch.set_float32_matmul_precision('high')
 
 # Get the logits
 model = GPT(GPTConfig())
 model.to(device)
+model = torch.compile(model)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
 for i in range(50):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x, y)
+    if device == 'cpu':
+        logits, loss = model(x, y)
+    else:
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    # torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1 - t0)*1000
+    tokens_per_sec = (train_loader.B * train_loader.T / (t1 - t0))
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, token_per_sec: {tokens_per_sec:.2f}")
 
 
 # num_return_sequences = 5
