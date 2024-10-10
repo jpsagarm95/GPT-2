@@ -224,11 +224,17 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-b = 16
+total_batch_size = 524288
+B = 16
 if device == 'cpu':
-    b = 1
+    B = 1
+T = 1024
+assert total_batch_size % (B * T) == 0
+grad_accum_steps = total_batch_size // (B * T)
+print(f"total desired batch size: {total_batch_size}")
+print(f"=> calcuated gradient accumulation steps: {grad_accum_steps}")
 
-train_loader = DataLoaderLite(B=b, T=1024)
+train_loader = DataLoaderLite(B=B, T=T)
 
 torch.set_float32_matmul_precision('high')
 
@@ -255,15 +261,21 @@ optimizer = model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4, devi
 
 for step in range(max_steps):
     t0 = time.time()
-    x, y = train_loader.next_batch()
-    x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    if device == 'cpu':
-        logits, loss = model(x, y)
-    else:
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+    loss_accum = 0.0
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+    
+        if device == 'cpu':
             logits, loss = model(x, y)
-    loss.backward()
+        else:
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach()
+        print(f"Loss in this step: {loss.detach():.4f}, accumulated loss: {loss_accum:.4f}")
+        loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
@@ -272,7 +284,8 @@ for step in range(max_steps):
     # torch.cuda.synchronize()
     t1 = time.time()
     dt = (t1 - t0)
-    tokens_per_sec = (train_loader.B * train_loader.T / (t1 - t0))
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+    tokens_per_sec = tokens_processed / dt
     print(f"step {step:4d} | loss: {loss.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | token_per_sec: {tokens_per_sec:.2f}")
 
 
