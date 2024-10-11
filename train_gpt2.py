@@ -307,7 +307,6 @@ for step in range(max_steps):
                 logits, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
-        print(f"Loss in this step: {loss.detach():.4f}, accumulated loss: {loss_accum:.4f}")
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
         loss.backward()
