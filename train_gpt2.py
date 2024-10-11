@@ -5,6 +5,10 @@ from turtle import back
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import os
+import numpy as np
+
+np.int = int
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -238,6 +242,8 @@ else:
         device = 'mps'
     print(f"using device: {device}")
 
+device_type = "cuda" if device.startswith("cuda") else "cpu"
+
 # Detect the device automatically
 import time
 
@@ -268,6 +274,8 @@ model = torch.compile(model)
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
+raw_model = model.module if ddp else model
+
 max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 10
@@ -282,7 +290,7 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
 
-optimizer = model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4, device=device)
+optimizer = raw_model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4, device=device)
 
 for step in range(max_steps):
     t0 = time.time()
@@ -295,7 +303,7 @@ for step in range(max_steps):
         if device == 'cpu':
             logits, loss = model(x, y)
         else:
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                 logits, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
